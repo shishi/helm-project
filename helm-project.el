@@ -65,6 +65,13 @@
 
 (require 'helm)
 
+(defvar hp:has-deferred-p nil
+  "this variable becomes t when deferred.el is installed.")
+
+(when (locate-library "deferred")
+  (require 'deferred)
+  (setq hp:has-deferred-p t))
+
 (defvar hp:my-projects nil)
 (defvar hp:history nil)
 
@@ -318,15 +325,33 @@ The action is to call FUNCTION with arguments ARGS."
   "Build shell command and execute it in a `helm' context."
   (destructuring-bind (root-dir key) (hp:get-root-directory)
     (when (and root-dir key)
-      (let* ((query (read-string "Grep query: " (or (thing-at-point 'symbol) "")))
-             (grep-command (hp:build-grep-command key))
-             (shell-command (format (hp:preprocess-grep-command grep-command)
-                                    (shell-quote-argument query))))
+      (lexical-let* ((query (read-string "Grep query: " (or (thing-at-point 'symbol) "")))
+                     (grep-command (hp:build-grep-command key))
+                     (shell-command (format (hp:preprocess-grep-command grep-command)
+                                            (shell-quote-argument query)))
+                     (candidate-buffer (helm-candidate-buffer 'global)))
         (helm-attrset 'recenter t)
-        (with-current-buffer (helm-candidate-buffer 'global)
-          (let ((grep-result (call-process-shell-command shell-command nil t nil)))
-            (cond ((= grep-result 1) (error "no match"))
-                  ((not (= grep-result 0)) (error "Failed grep")))))))))
+        (if hp:has-deferred-p
+            (deferred:$
+              (deferred:next
+                (lambda () (message "now grepping...")))
+              (deferred:process-shell-bufferc it shell-command)
+              (deferred:nextc it
+                (lambda (buffer)
+                  (with-current-buffer buffer
+                    (let ((content (buffer-string)))
+                      (with-current-buffer candidate-buffer
+                        (insert content))))))
+              (deferred:nextc it
+                (lambda () (message "finish grepping!"))))
+          (hp:run-grep-command-synchronously candidate-buffer shell-command))))))
+
+(defun hp:run-grep-command-synchronously (buffer command)
+  "Run grep commmand synchronously."
+  (with-current-buffer buffer
+    (let ((grep-result (call-process-shell-command command nil t nil)))
+      (cond ((= grep-result 1) (error "no match"))
+            ((not (= grep-result 0)) (error "Failed grep"))))))
 
 (defvar hp:helm-c-project-grep-source
   '((name . "helm project grep")
