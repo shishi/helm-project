@@ -516,7 +516,7 @@ directory, open this directory."
  :look-for hp:default-project-root-files
  )
 
-(ap:add-project
+(hp:add-project
  :name 'ruby
  :look-for '("Rakefile" "Gemfile")
  :exclude-regexp '("/tmp" "/log" ) ; can be regexp or list of regexp
