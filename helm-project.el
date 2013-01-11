@@ -5,6 +5,9 @@
 
 ;; Author: Shigenobu Nishikawa
 
+;; Contributors:
+;;     Shinya Yamaoka
+
 ;; This file is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
 ;; the Free Software Foundation; either version 2, or (at your option)
@@ -61,6 +64,13 @@
 ;;  )
 
 (require 'helm)
+
+(defvar hp:has-deferred-p nil
+  "this variable becomes t when deferred.el is installed.")
+
+(when (locate-library "deferred")
+  (require 'deferred)
+  (setq hp:has-deferred-p t))
 
 (defvar hp:my-projects nil)
 (defvar hp:history nil)
@@ -311,17 +321,50 @@ The action is to call FUNCTION with arguments ARGS."
    (t
     (message "`helm-grep' is not installed. this command requires `helm-grep'"))))
 
-(defun hp:do-project-grep ()
+(defun hp:helm-c-project-grep-init ()
+  "Build shell command and execute it in a `helm' context."
   (destructuring-bind (root-dir key) (hp:get-root-directory)
     (when (and root-dir key)
-      (let* ((query (read-string "Grep query: " (or (thing-at-point 'symbol) "")))
-             (command (hp:build-grep-command key)))
-        (helm-grep-base
-             (list
-              (agrep-source (format (agrep-preprocess-command command)
-                                    (shell-quote-argument query))
-                            root-dir)))
-        ))))
+      (lexical-let* ((query (read-string "Grep query: " (or (thing-at-point 'symbol) "")))
+                     (grep-command (hp:build-grep-command key))
+                     (shell-command (format (hp:preprocess-grep-command grep-command)
+                                            (shell-quote-argument query)))
+                     (candidate-buffer (helm-candidate-buffer 'global)))
+        (helm-attrset 'recenter t)
+        (if hp:has-deferred-p
+            (deferred:$
+              (deferred:next
+                (lambda () (message "now grepping...")))
+              (deferred:process-shell-bufferc it shell-command)
+              (deferred:nextc it
+                (lambda (buffer)
+                  (with-current-buffer buffer
+                    (let ((content (buffer-string)))
+                      (with-current-buffer candidate-buffer
+                        (insert content))))))
+              (deferred:nextc it
+                (lambda () (message "finish grepping!"))))
+          (hp:run-grep-command-synchronously candidate-buffer shell-command))))))
+
+(defun hp:run-grep-command-synchronously (buffer command)
+  "Run grep commmand synchronously."
+  (with-current-buffer buffer
+    (let ((grep-result (call-process-shell-command command nil t nil)))
+      (cond ((= grep-result 1) (error "no match"))
+            ((not (= grep-result 0)) (error "Failed grep"))))))
+
+(defvar hp:helm-c-project-grep-source
+  '((name . "helm project grep")
+    (init . hp:helm-c-project-grep-init)
+    (candidates-in-buffer)
+    (type . file-line)
+    (candidate-number-limit . 9999)))
+
+(defun hp:do-project-grep ()
+  "Execute grep command in the root directory of a project."
+  (let ((buf (get-buffer-create "*helm project grep*")))
+    (helm :sources '(hp:helm-c-project-grep-source)
+          :buffer buf)))
 
 (defun hp:build-grep-command (key)
   (let ((grep-extensions (hp:get-grep-extensions key))
@@ -335,6 +378,18 @@ The action is to call FUNCTION with arguments ARGS."
      " "
      egrep-command " -Hin "
      "%s")))
+
+(defun hp:preprocess-grep-command (command)
+  "Quote `$buffers' in grep command and return the whole command."
+  (with-temp-buffer
+    (insert command)
+    (goto-char 1)
+    (when (search-forward "$buffers" nil t)
+      (delete-region (match-beginning 0) (match-end 0))
+      (insert (mapconcat 'shell-quote-argument
+                         (delq nil (mapcar 'buffer-file-name (buffer-list))) " ")))
+    (buffer-string)))
+
 
 ;;  (hp:build-grep-command  'perl "sub")
 ;; hp:build-grep-command
